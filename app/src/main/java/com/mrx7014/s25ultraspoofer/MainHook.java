@@ -5,6 +5,7 @@ import android.util.Log;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.Set;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -98,34 +99,6 @@ public class MainHook implements IXposedHookLoadPackage {
 
     // -----------------------------------------------------------------------
     // 1. AuthController – replicate oplusFpUiReady()
-    //
-    // The patch structure is:
-    //
-    //   class AuthController {
-    //       private void oplusFpUiReady(boolean fingerDown) {
-    //           SystemProperties.set("sys.phh.oplus.fppress", fingerDown ? "1" : "0");
-    //       }
-    //
-    //       // inside some method that registers the callback:
-    //       mUdfpsController.addCallback(new UdfpsController.Callback() {
-    //           public void onFingerUp()   { oplusFpUiReady(false); }
-    //           public void onFingerDown() { oplusFpUiReady(true); ... }
-    //       });
-    //   }
-    //
-    // oplusFpUiReady() is a method on AuthController itself. The anonymous
-    // Callback inner class calls it via the implicit AuthController.this capture.
-    //
-    // STRATEGY: Hook UdfpsController.onFingerDown() / onFingerUp() directly.
-    // These are the methods UdfpsController calls internally which then invoke
-    // the registered callbacks. Hooking here is equivalent to hooking the
-    // callback, but doesn't require locating anonymous inner classes at all.
-    //
-    // FALLBACK A: Hook AuthController directly for onUdfpsPointerDown/Up (Android 13+
-    // refactor moved callback logic into AuthController itself in some branches).
-    //
-    // FALLBACK B: Scan AuthController$N inner classes for the callback (original
-    // approach, kept as last resort).
     // -----------------------------------------------------------------------
     private void hookAuthController(ClassLoader cl) {
 
@@ -135,7 +108,7 @@ public class MainHook implements IXposedHookLoadPackage {
             Class<?> udfpsCls = XposedHelpers.findClass(CLS_UDFPS_CONTROLLER, cl);
 
             // onFingerDown fires when the HAL reports a touch on the sensor area
-            int downCount = XposedBridge.hookAllMethods(udfpsCls, "onFingerDown",
+            Set<XC_MethodHook.Unhook> downHooks = XposedBridge.hookAllMethods(udfpsCls, "onFingerDown",
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
@@ -145,7 +118,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     });
 
             // onFingerUp fires when the finger lifts
-            int upCount = XposedBridge.hookAllMethods(udfpsCls, "onFingerUp",
+            Set<XC_MethodHook.Unhook> upHooks = XposedBridge.hookAllMethods(udfpsCls, "onFingerUp",
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
@@ -154,26 +127,24 @@ public class MainHook implements IXposedHookLoadPackage {
                         }
                     });
 
-            if (downCount > 0 && upCount > 0) {
+            if (downHooks.size() > 0 && upHooks.size() > 0) {
                 hookedViaUdfpsController = true;
                 Log.i(TAG, "Hooked UdfpsController onFingerDown/Up ("
-                        + downCount + "/" + upCount + " methods)");
+                        + downHooks.size() + "/" + upHooks.size() + " methods)");
             } else {
                 Log.w(TAG, "UdfpsController found but onFingerDown/Up count was 0 "
-                        + "(down=" + downCount + " up=" + upCount + ")");
+                        + "(down=" + downHooks.size() + " up=" + upHooks.size() + ")");
             }
         } catch (XposedHelpers.ClassNotFoundError e) {
             Log.w(TAG, "UdfpsController not found, trying fallbacks");
         }
 
         // --- Fallback A: AuthController.onUdfpsPointerDown / onUdfpsPointerUp ---
-        // Android 13+ QPR2 and some vendor branches moved the logic into
-        // AuthController directly under these method names.
         if (!hookedViaUdfpsController) {
             try {
                 Class<?> authCls = XposedHelpers.findClass(CLS_AUTH_CONTROLLER, cl);
 
-                int downCount = XposedBridge.hookAllMethods(authCls, "onUdfpsPointerDown",
+                Set<XC_MethodHook.Unhook> downHooks = XposedBridge.hookAllMethods(authCls, "onUdfpsPointerDown",
                         new XC_MethodHook() {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam param) {
@@ -182,7 +153,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             }
                         });
 
-                int upCount = XposedBridge.hookAllMethods(authCls, "onUdfpsPointerUp",
+                Set<XC_MethodHook.Unhook> upHooks = XposedBridge.hookAllMethods(authCls, "onUdfpsPointerUp",
                         new XC_MethodHook() {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam param) {
@@ -191,7 +162,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             }
                         });
 
-                if (downCount > 0 || upCount > 0) {
+                if (downHooks.size() > 0 || upHooks.size() > 0) {
                     hookedViaUdfpsController = true;
                     Log.i(TAG, "Hooked AuthController onUdfpsPointerDown/Up");
                 }
@@ -201,8 +172,6 @@ public class MainHook implements IXposedHookLoadPackage {
         }
 
         // --- Fallback B: scan AuthController$N anonymous callback inner classes ---
-        // Last resort: the original approach. We scan $1..$15 for the anonymous
-        // UdfpsController.Callback that has both onFingerDown and onFingerUp.
         if (!hookedViaUdfpsController) {
             Log.w(TAG, "Falling back to AuthController inner class scan");
             boolean innerHooked = false;
@@ -250,12 +219,11 @@ public class MainHook implements IXposedHookLoadPackage {
 
     // -----------------------------------------------------------------------
     // 2. AuthService – inject Oplus UDFPS coords before getUdfpsProps() runs
-    // RUNS IN: system_server (package "android")
     // -----------------------------------------------------------------------
     private void hookAuthService(ClassLoader cl) {
         try {
             Class<?> cls = XposedHelpers.findClass(CLS_AUTH_SERVICE, cl);
-            int count = XposedBridge.hookAllMethods(cls, "getUdfpsProps",
+            Set<XC_MethodHook.Unhook> hooks = XposedBridge.hookAllMethods(cls, "getUdfpsProps",
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
@@ -283,7 +251,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             }
                         }
                     });
-            Log.i(TAG, "Hooked AuthService#getUdfpsProps (" + count + " methods)");
+            Log.i(TAG, "Hooked AuthService#getUdfpsProps (" + hooks.size() + " methods)");
         } catch (XposedHelpers.ClassNotFoundError e) {
             Log.e(TAG, "AuthService not found – is 'android' in module scope?", e);
         } catch (Throwable t) {
@@ -293,12 +261,11 @@ public class MainHook implements IXposedHookLoadPackage {
 
     // -----------------------------------------------------------------------
     // 3. FingerprintProvider – force TYPE_UDFPS_OPTICAL when sensorLocationX > 0
-    // RUNS IN: system_server (package "android")
     // -----------------------------------------------------------------------
     private void hookFingerprintProvider(ClassLoader cl) {
         try {
             Class<?> cls = XposedHelpers.findClass(CLS_FP_PROVIDER, cl);
-            int count = XposedBridge.hookAllMethods(cls, "addSensor",
+            Set<XC_MethodHook.Unhook> hooks = XposedBridge.hookAllMethods(cls, "addSensor",
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam param) {
@@ -332,7 +299,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             }
                         }
                     });
-            Log.i(TAG, "Hooked FingerprintProvider#addSensor (" + count + " methods)");
+            Log.i(TAG, "Hooked FingerprintProvider#addSensor (" + hooks.size() + " methods)");
         } catch (XposedHelpers.ClassNotFoundError e) {
             Log.e(TAG, "FingerprintProvider not found – is 'android' in module scope?", e);
         } catch (Throwable t) {
