@@ -1,4 +1,4 @@
-package com.mrx7014.s25ultraspoofer;
+package com.omar.force_font;
 import android.content.res.AssetManager;
 import android.content.res.Resources;
 import android.graphics.Typeface;
