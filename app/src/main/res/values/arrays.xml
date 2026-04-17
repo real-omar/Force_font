@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="xposed_scope">
-        <item>com.android.systemui</item>
-        <item>android</item>
+        <item>com.nothing.soundrecorder</item>
+        <item>com.nothing.weather</item>
+        <item>com.nothing.gallery</item>
     </string-array>
 </resources>
