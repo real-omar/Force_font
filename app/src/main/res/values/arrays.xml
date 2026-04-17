@@ -4,5 +4,7 @@
         <item>com.nothing.soundrecorder</item>
         <item>com.nothing.weather</item>
         <item>com.nothing.gallery</item>
+        <item>com.android.settings</item>
+        <item>org.lineageos.aperture</item>
     </string-array>
 </resources>
